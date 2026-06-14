@@ -1,0 +1,74 @@
+#include <Adafruit_Fingerprint.h>
+#include <HardwareSerial.h>
+
+HardwareSerial mySerial(2);
+Adafruit_Fingerprint finger = Adafruit_Fingerprint(&mySerial);
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  // RX = GPIO16, TX = GPIO17
+  mySerial.begin(57600, SERIAL_8N1, 16, 17);
+
+  Serial.println("================================");
+  Serial.println("Fingerprint Verification System");
+  Serial.println("================================");
+
+  finger.begin(57600);
+
+  if (finger.verifyPassword()) {
+    Serial.println("Fingerprint Sensor Found!");
+  } else {
+    Serial.println("Fingerprint Sensor NOT Found!");
+    while (1);
+  }
+
+  finger.getTemplateCount();
+
+  Serial.print("Stored Fingerprints: ");
+  Serial.println(finger.templateCount);
+
+  Serial.println("\nPlace your finger...");
+}
+
+void loop() {
+
+  uint8_t p = finger.getImage();
+
+  if (p != FINGERPRINT_OK) {
+    return;
+  }
+
+  p = finger.image2Tz();
+
+  if (p != FINGERPRINT_OK) {
+    Serial.println("Image Conversion Failed");
+    delay(1000);
+    return;
+  }
+
+  p = finger.fingerFastSearch();
+
+  if (p == FINGERPRINT_OK) {
+
+    Serial.println("\n================================");
+    Serial.println("ACCESS GRANTED");
+    Serial.print("Finger ID: ");
+    Serial.println(finger.fingerID);
+
+    Serial.print("Confidence: ");
+    Serial.println(finger.confidence);
+    Serial.println("================================");
+
+  } else {
+
+    Serial.println("\n================================");
+    Serial.println("ACCESS DENIED");
+    Serial.println("Fingerprint Not Found");
+    Serial.println("================================");
+
+  }
+
+  delay(1500);
+}
