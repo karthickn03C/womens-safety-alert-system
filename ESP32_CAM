@@ -1,0 +1,211 @@
+// ============================================================
+// ESP32-CAM: Continuous Capture While Trigger is HIGH
+// ============================================================
+
+#include "esp_camera.h"
+#include "FS.h"
+#include "SD_MMC.h"
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
+#include <UniversalTelegramBot.h>
+#include <ArduinoJson.h>
+
+// ─── WiFi + Telegram ─────────────────────────────────────────
+#define WIFI_SSID       "ABC"
+#define WIFI_PASSWORD   "Hari123."
+#define BOT_TOKEN       "8735280404:AAGYThSBTMqiYPEiUekQjYGiCIuQ-2QHhUk"
+#define CHAT_ID         "6692235203"
+
+// ─── Trigger Pin ─────────────────────────────────────────────
+#define TRIGGER_PIN     13   // SAFE GPIO
+#define CAPTURE_INTERVAL 3000
+
+// ─── Camera Pins (AI Thinker) ────────────────────────────────
+#define PWDN_GPIO_NUM   32
+#define RESET_GPIO_NUM  -1
+#define XCLK_GPIO_NUM    0
+#define SIOD_GPIO_NUM   26
+#define SIOC_GPIO_NUM   27
+#define Y9_GPIO_NUM     35
+#define Y8_GPIO_NUM     34
+#define Y7_GPIO_NUM     39
+#define Y6_GPIO_NUM     36
+#define Y5_GPIO_NUM     21
+#define Y4_GPIO_NUM     19
+#define Y3_GPIO_NUM     18
+#define Y2_GPIO_NUM      5
+#define VSYNC_GPIO_NUM  25
+#define HREF_GPIO_NUM   23
+#define PCLK_GPIO_NUM   22
+
+// ─── Globals ─────────────────────────────────────────────────
+WiFiClientSecure client;
+UniversalTelegramBot bot(BOT_TOKEN, client);
+int imageCount = 0;
+
+// Telegram streaming globals
+camera_fb_t *fb_global;
+size_t fb_index = 0;
+
+// ─── Telegram Streaming Functions (OLD LIB FIX) ──────────────
+bool moreDataAvailable() {
+  return fb_index < fb_global->len;
+}
+
+uint8_t getNextByte() {
+  return fb_global->buf[fb_index++];
+}
+
+int getNextBuffer(uint8_t *buffer, size_t maxLen, size_t &index) {
+  return 0;
+}
+
+// ─── Camera Init ─────────────────────────────────────────────
+bool initCamera() {
+  camera_config_t config;
+
+  config.ledc_channel = LEDC_CHANNEL_0;
+  config.ledc_timer   = LEDC_TIMER_0;
+  config.pin_d0 = Y2_GPIO_NUM; config.pin_d1 = Y3_GPIO_NUM;
+  config.pin_d2 = Y4_GPIO_NUM; config.pin_d3 = Y5_GPIO_NUM;
+  config.pin_d4 = Y6_GPIO_NUM; config.pin_d5 = Y7_GPIO_NUM;
+  config.pin_d6 = Y8_GPIO_NUM; config.pin_d7 = Y9_GPIO_NUM;
+  config.pin_xclk = XCLK_GPIO_NUM;
+  config.pin_pclk = PCLK_GPIO_NUM;
+  config.pin_vsync = VSYNC_GPIO_NUM;
+  config.pin_href = HREF_GPIO_NUM;
+  config.pin_sscb_sda = SIOD_GPIO_NUM;
+  config.pin_sscb_scl = SIOC_GPIO_NUM;
+  config.pin_pwdn = PWDN_GPIO_NUM;
+  config.pin_reset = RESET_GPIO_NUM;
+
+  config.xclk_freq_hz = 20000000;
+  config.pixel_format = PIXFORMAT_JPEG;
+
+  if (psramFound()) {
+    config.frame_size = FRAMESIZE_UXGA;
+    config.jpeg_quality = 10;
+    config.fb_count = 2;
+  } else {
+    config.frame_size = FRAMESIZE_SVGA;
+    config.jpeg_quality = 12;
+    config.fb_count = 1;
+  }
+
+  if (esp_camera_init(&config) != ESP_OK) {
+    Serial.println("[CAM] Init failed");
+    return false;
+  }
+
+  Serial.println("[CAM] Ready");
+  return true;
+}
+
+// ─── SD Card Init ────────────────────────────────────────────
+bool initSD() {
+  if (!SD_MMC.begin()) return false;
+  if (SD_MMC.cardType() == CARD_NONE) return false;
+  Serial.println("[SD] Ready");
+  return true;
+}
+
+// ─── Save Image ──────────────────────────────────────────────
+String saveToSD(camera_fb_t *fb) {
+  imageCount++;
+  String filename = "/IMG_" + String(imageCount) + ".jpg";
+
+  File file = SD_MMC.open(filename.c_str(), FILE_WRITE);
+  if (!file) return "";
+
+  file.write(fb->buf, fb->len);
+  file.close();
+
+  Serial.println("[SD] Saved " + filename);
+  return filename;
+}
+
+// ─── Send to Telegram ────────────────────────────────────────
+void sendToTelegram(camera_fb_t *fb, String filename, int shotNum) {
+
+  String caption = "Shot #" + String(shotNum);
+
+  fb_global = fb;
+  fb_index = 0;
+
+  String res = bot.sendPhotoByBinary(
+    CHAT_ID,
+    "image/jpeg",
+    fb->len,
+    moreDataAvailable,
+    getNextByte,
+    nullptr,   // ✅ FIX: no buffer function
+    nullptr
+  );
+
+  if (res.length() > 0) {
+    Serial.println("[TG] Sent OK");
+  } else {
+    Serial.println("[TG] Failed");
+  }
+}
+
+// ─── Capture Loop ────────────────────────────────────────────
+void runCaptureLoop() {
+
+  bot.sendMessage(CHAT_ID, "Trigger ON - capturing...", "");
+
+  int shot = 0;
+
+  while (digitalRead(TRIGGER_PIN) == HIGH) {
+
+    shot++;
+
+    camera_fb_t *fb = esp_camera_fb_get();
+    if (!fb) continue;
+
+    String filename = saveToSD(fb);
+
+    sendToTelegram(fb, filename, shot);
+
+    esp_camera_fb_return(fb);
+
+    delay(CAPTURE_INTERVAL);
+  }
+
+  bot.sendMessage(CHAT_ID, "Trigger OFF - stopped", "");
+}
+
+// ─── Setup ───────────────────────────────────────────────────
+void setup() {
+
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+
+  Serial.begin(115200);
+
+  pinMode(TRIGGER_PIN, INPUT_PULLDOWN);
+
+  initCamera();
+  initSD();
+
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+  }
+
+  client.setInsecure(); // important
+
+  bot.sendMessage(CHAT_ID, "ESP32-CAM Ready", "");
+}
+
+// ─── Loop ────────────────────────────────────────────────────
+void loop() {
+
+  if (digitalRead(TRIGGER_PIN) == HIGH) {
+    runCaptureLoop();
+    delay(500);
+  }
+
+  delay(50);
+}
