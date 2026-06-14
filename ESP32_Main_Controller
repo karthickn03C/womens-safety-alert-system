@@ -1,1 +1,270 @@
+#include <Keypad.h>
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <Adafruit_Fingerprint.h>
+#include <HardwareSerial.h>
 
+#define TRIGGER_PIN 23
+#define BUZZER 2
+
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+// GSM + Fingerprint Serial
+HardwareSerial gsm(1);
+HardwareSerial mySerial(2);
+
+// Fingerprint
+Adafruit_Fingerprint finger = Adafruit_Fingerprint(&mySerial);
+
+// Keypad setup
+const byte ROWS = 4, COLS = 4;
+
+char keys[ROWS][COLS] = {
+  {'1','2','3','A'},
+  {'4','5','6','B'},
+  {'7','8','9','C'},
+  {'*','0','#','D'}
+};
+
+byte rowPins[ROWS] = {13, 12, 14, 27};
+byte colPins[COLS] = {26, 25, 33, 32};
+
+Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
+
+// Variables
+String entered = "";
+String systemPIN = "6878";   // Change PIN here
+
+bool alertActive = false;
+bool fingerDetected = false;
+
+// =====================
+// STARTUP SCREEN
+// =====================
+void startupScreen() {
+
+  lcd.clear();
+  lcd.print("Women's Safety");
+  lcd.setCursor(0,1);
+  lcd.print("Alert System");
+  delay(2000);
+
+  lcd.clear();
+  lcd.print("GPS Scanning...");
+  delay(1500);
+
+  lcd.clear();
+  lcd.print("GPS OK");
+  delay(1000);
+
+  lcd.clear();
+  lcd.print("GSM Checking...");
+  delay(1500);
+
+  lcd.clear();
+  lcd.print("GSM OK");
+  delay(1000);
+
+  lcd.clear();
+  lcd.print("Fingerprint...");
+  delay(1500);
+
+  lcd.clear();
+  lcd.print("Sensor OK");
+  delay(1000);
+
+  lcd.clear();
+  lcd.print("LCD Display...");
+  delay(1000);
+
+  lcd.clear();
+  lcd.print("LCD OK");
+  delay(1000);
+
+  lcd.clear();
+  lcd.print("Keypad Check...");
+  delay(1000);
+
+  lcd.clear();
+  lcd.print("Keypad OK");
+  delay(1000);
+
+  lcd.clear();
+  lcd.print("System Ready");
+  delay(2000);
+
+  lcd.clear();
+  lcd.print("Place Finger...");
+}
+
+void setup() {
+
+  Serial.begin(115200);
+
+  // Fingerprint
+  mySerial.begin(57600, SERIAL_8N1, 16, 17);
+  finger.begin(57600);
+
+  if (finger.verifyPassword()) {
+    Serial.println("Fingerprint sensor found");
+  } else {
+    Serial.println("Fingerprint sensor NOT found");
+    while (1);
+  }
+
+  // GSM
+  gsm.begin(9600, SERIAL_8N1, 18, 19);
+
+  // Buzzer
+  pinMode(BUZZER, OUTPUT);
+  digitalWrite(BUZZER, LOW);
+
+  // Trigger
+  pinMode(TRIGGER_PIN, OUTPUT);
+  digitalWrite(TRIGGER_PIN, LOW);
+
+  // LCD
+  lcd.init();
+  lcd.backlight();
+
+  startupScreen();
+}
+
+void loop() {
+
+  char key = keypad.getKey();
+
+  int id = getFingerprintID();
+
+  // Finger detected
+  if (id >= 0 && !alertActive && !fingerDetected) {
+
+    fingerDetected = true;
+    startAlert();
+  }
+
+  // Finger removed
+  if (id == -1) {
+    fingerDetected = false;
+  }
+
+  // PIN Entry
+  if (alertActive && key != NO_KEY) {
+
+    entered += key;
+
+    lcd.setCursor(0,1);
+    lcd.print("                ");
+    lcd.setCursor(0,1);
+    lcd.print(entered);
+
+    if (entered.length() == 4) {
+
+      if (entered == systemPIN) {
+
+        stopAlert();
+
+      } else {
+
+        lcd.clear();
+        lcd.print("Wrong PIN!");
+        delay(1500);
+
+        entered = "";
+
+        lcd.clear();
+        lcd.print("Enter PIN:");
+      }
+    }
+  }
+}
+
+// =====================
+// START ALERT
+// =====================
+void startAlert() {
+
+  alertActive = true;
+
+  digitalWrite(BUZZER, HIGH);
+  digitalWrite(TRIGGER_PIN, HIGH);
+
+  entered = "";
+
+  lcd.clear();
+  lcd.print("Fingerprint OK");
+  delay(2000);
+
+  lcd.clear();
+  lcd.print("ALERT ACTIVE");
+  delay(1500);
+
+  sendSMS();
+
+  lcd.clear();
+  lcd.print("Enter the OTP:");
+}
+
+// =====================
+// STOP ALERT
+// =====================
+void stopAlert() {
+
+  alertActive = false;
+
+  digitalWrite(BUZZER, LOW);
+  digitalWrite(TRIGGER_PIN, LOW);
+
+  entered = "";
+
+  lcd.clear();
+  lcd.print("PIN Correct");
+  delay(2000);
+
+  lcd.clear();
+  lcd.print("System Safe");
+  delay(1500);
+
+  lcd.clear();
+  lcd.print("Place Finger...");
+}
+
+// =====================
+// SEND SMS
+// =====================
+void sendSMS() {
+
+  gsm.println("AT+CMGF=1");
+  delay(1000);
+
+  gsm.println("AT+CMGS=\"+916381197449\"");
+  delay(1000);
+
+  gsm.println("ALERT!");
+  gsm.println("Fingerprint detected.");
+  gsm.println("Enter PIN on keypad to disable.");
+
+  gsm.write(26);
+
+  delay(3000);
+}
+
+// =====================
+// FINGERPRINT MATCH
+// =====================
+int getFingerprintID() {
+
+  uint8_t p = finger.getImage();
+  if (p != FINGERPRINT_OK)
+    return -1;
+
+  p = finger.image2Tz();
+  if (p != FINGERPRINT_OK)
+    return -1;
+
+  p = finger.fingerSearch();
+  if (p != FINGERPRINT_OK)
+    return -1;
+
+  return finger.fingerID;
+}
